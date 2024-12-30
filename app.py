@@ -1,189 +1,175 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
+import numpy as np
+import yfinance as yf
 from datetime import datetime, timedelta
-import json
-import os
+import plotly.graph_objects as go
 
-# Page config
-st.set_page_config(page_title="Futures Pro Manager", page_icon="📊", layout="wide")
+# Page Configurations
+st.set_page_config(page_title="Daily SPY Dashboard", page_icon="📈", layout="wide")
 
-# Ensure data directory exists
-data_dir = "futures_data"
-os.makedirs(data_dir, exist_ok=True)
+# Fetch Historical SPY Data
+def fetch_historical_data(symbol, period="1mo", interval="1d"):
+    data = yf.download(symbol, period=period, interval=interval)
+    data.reset_index(inplace=True)
+    return data
 
-# Initialize session state
-if 'support_levels' not in st.session_state:
-    st.session_state.support_levels = [
-        {"price": 6022, "major": True},
-        {"price": 6016, "major": False},
-        {"price": 6006, "major": False},
-        {"price": 6002, "major": False},
-        {"price": 5996, "major": True}
+# Calculate Levels
+def calculate_levels(data):
+    high = data['High'].max()
+    low = data['Low'].min()
+    close = data['Close'].iloc[-1]
+
+    resistance_levels = [
+        high,
+        high - (high - low) * 0.236,
+        high - (high - low) * 0.382,
+        high - (high - low) * 0.618
     ]
-
-if 'resistance_levels' not in st.session_state:
-    st.session_state.resistance_levels = [
-        {"price": 6027, "major": False},
-        {"price": 6033, "major": True},
-        {"price": 6043, "major": False},
-        {"price": 6054, "major": False}
+    support_levels = [
+        low,
+        low + (high - low) * 0.236,
+        low + (high - low) * 0.382,
+        low + (high - low) * 0.618
     ]
+    magnet_price = (high + low + close) / 3
 
-if 'dynamic_zone' not in st.session_state:
-    st.session_state.dynamic_zone = {'top': 6143.0, 'bottom': 6105.0}
-if 'magnet_price' not in st.session_state:
-    st.session_state.magnet_price = 6130.0
+    return resistance_levels, support_levels, magnet_price
 
-# Sidebar
-with st.sidebar:
-    st.header("Futures Pro Settings")
+# Generate Trading Plan
+def generate_trading_plan(resistance, support, magnet):
+    plan = f"""
+    ### Bull Case
+    - If price breaks above **{resistance[0]:.2f}**, look for longs targeting **{resistance[1]:.2f}** and **{resistance[2]:.2f}**.
+    - Monitor **{magnet:.2f}** as a pivot point for continuation.
 
-    # Quick Level Add
-    st.subheader("Quick Add Level")
-    quick_price = st.number_input("Price", step=0.25)
-    col1, col2 = st.columns(2)
-    with col1:
-        level_type = st.radio("Type", ["Support", "Resistance"])
-    with col2:
-        is_major = st.checkbox("Major")
-
-    if st.button("Add Level"):
-        if quick_price <= 0:
-            st.error("Price must be greater than zero.")
-        else:
-            new_level = {"price": quick_price, "major": is_major}
-            if level_type == "Support":
-                if new_level not in st.session_state.support_levels:
-                    st.session_state.support_levels.append(new_level)
-                    st.session_state.support_levels.sort(key=lambda x: x['price'])
-                else:
-                    st.warning("This support level already exists.")
-            else:
-                if new_level not in st.session_state.resistance_levels:
-                    st.session_state.resistance_levels.append(new_level)
-                    st.session_state.resistance_levels.sort(key=lambda x: x['price'])
-                else:
-                    st.warning("This resistance level already exists.")
-
-    # Dynamic Zone Settings
-    st.subheader("Dynamic Zone")
-    dynamic_top = st.number_input("Zone Top", value=st.session_state.dynamic_zone['top'], step=0.25)
-    dynamic_bottom = st.number_input("Zone Bottom", value=st.session_state.dynamic_zone['bottom'], step=0.25)
-    magnet_price = st.number_input("Magnet Price", value=st.session_state.magnet_price, step=0.25)
-
-    if st.button("Update Zones"):
-        if dynamic_top <= dynamic_bottom:
-            st.error("Zone top must be greater than zone bottom.")
-        else:
-            st.session_state.dynamic_zone['top'] = dynamic_top
-            st.session_state.dynamic_zone['bottom'] = dynamic_bottom
-            st.session_state.magnet_price = magnet_price
-
-# Main content
-tab1, tab2, tab3 = st.tabs(["Chart", "Level Management", "Trading Plan"])
-
-with tab1:
-    # TradingView Widget
-    tradingview_widget = """
-    <div class="tradingview-widget-container">
-        <div id="tradingview_chart"></div>
-        <div class="tradingview-widget-copyright">
-            <a href="https://www.tradingview.com/" rel="noopener nofollow" target="_blank">
-            <span class="blue-text">Track all markets on TradingView</span>
-            </a>
-        </div>
-        <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-        <script type="text/javascript">
-        new TradingView.widget({
-            "autosize": true,
-            "symbol": "CME:ES1!",
-            "interval": "5",
-            "timezone": "America/New_York",
-            "theme": "dark",
-            "style": "1",
-            "locale": "en",
-            "toolbar_bg": "#f1f3f6",
-            "enable_publishing": false,
-            "allow_symbol_change": true,
-            "container_id": "tradingview_chart",
-            "hide_side_toolbar": false,
-            "studies": [
-                "MAExp@tv-basicstudies",
-                "Volume@tv-basicstudies"
-            ],
-            "width": "100%",
-            "height": "800"
-        });
-        </script>
-    </div>
+    ### Bear Case
+    - If price falls below **{support[0]:.2f}**, look for shorts targeting **{support[1]:.2f}** and **{support[2]:.2f}**.
+    - Watch for failed breakdowns near **{support[1]:.2f}** to confirm continuation.
+    
+    ### Key Notes
+    - Volatility is elevated. Trade level to level.
+    - Avoid chasing moves; wait for reclaim setups.
+    - Size down in risky zones.
     """
+    return plan
 
-    components.html(tradingview_widget, height=800)
+# Generate Recap
+def generate_recap(data):
+    today_high = data['High'].iloc[-1]
+    today_low = data['Low'].iloc[-1]
+    today_close = data['Close'].iloc[-1]
 
+    recap = f"""
+    ### Daily Recap
+    - **High:** {today_high:.2f}
+    - **Low:** {today_low:.2f}
+    - **Close:** {today_close:.2f}
+
+    Today's session saw a range between {today_low:.2f} and {today_high:.2f}, closing at {today_close:.2f}. Key movements included resistance tests and support reactions.
+    """
+    return recap
+
+# Load Historical Data
+symbol = "SPY"
+data = fetch_historical_data(symbol)
+
+# Calculate Levels
+resistance_levels, support_levels, magnet_price = calculate_levels(data)
+
+# Sidebar: User Input for Adjustments
+st.sidebar.header("Level Adjustments")
+dynamic_top = st.sidebar.number_input("Dynamic Zone Top", value=round(resistance_levels[1], 2))
+dynamic_bottom = st.sidebar.number_input("Dynamic Zone Bottom", value=round(support_levels[1], 2))
+magnet_price = st.sidebar.number_input("Magnet Price", value=round(magnet_price, 2))
+
+st.sidebar.subheader("Support Levels")
+support_levels = [
+    st.sidebar.number_input(f"Support {i+1}", value=round(level, 2)) for i, level in enumerate(support_levels)
+]
+st.sidebar.subheader("Resistance Levels")
+resistance_levels = [
+    st.sidebar.number_input(f"Resistance {i+1}", value=round(level, 2)) for i, level in enumerate(resistance_levels)
+]
+
+# Main Content with Tabs
+st.title("Daily SPY Dashboard")
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Market Overview", "Key Levels", "Trading Plan", "Recap", "Chart"])
+
+# Tab: Market Overview
+with tab1:
+    st.header("📊 Market Overview")
+    status = "**Bullish**" if data['Close'].iloc[-1] > resistance_levels[1] else "**Bearish**" if data['Close'].iloc[-1] < support_levels[1] else "**Neutral**"
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric(label="Market Status", value=status)
+        st.metric(label="Last Close", value=f"{data['Close'].iloc[-1]:.2f}")
+    with col2:
+        st.metric(label="Dynamic Zone Top", value=f"{dynamic_top}")
+        st.metric(label="Dynamic Zone Bottom", value=f"{dynamic_bottom}")
+
+# Tab: Key Levels
 with tab2:
-    st.header("Level Management")
+    st.header("📈 Key Levels")
 
-    # Save/Load Levels
     col1, col2 = st.columns(2)
     with col1:
-        save_name = st.text_input("Save Name", "default")
-        if st.button("Save Levels"):
-            levels = {
-                "support": st.session_state.support_levels,
-                "resistance": st.session_state.resistance_levels,
-                "dynamic_zone": st.session_state.dynamic_zone,
-                "magnet_price": st.session_state.magnet_price
-            }
-            try:
-                with open(f"{data_dir}/{save_name}.json", "w") as f:
-                    json.dump(levels, f)
-                st.success(f"Saved levels as {save_name}")
-            except Exception as e:
-                st.error(f"Error saving levels: {e}")
-
-    with col2:
-        saved_files = [f.replace(".json", "") for f in os.listdir(data_dir) if f.endswith(".json")]
-        if saved_files:
-            load_name = st.selectbox("Load Saved Levels", saved_files)
-            if st.button("Load Levels"):
-                try:
-                    with open(f"{data_dir}/{load_name}.json", "r") as f:
-                        levels = json.load(f)
-                        st.session_state.support_levels = levels["support"]
-                        st.session_state.resistance_levels = levels["resistance"]
-                        st.session_state.dynamic_zone = levels["dynamic_zone"]
-                        st.session_state.magnet_price = levels["magnet_price"]
-                    st.success(f"Loaded levels from {load_name}")
-                except Exception as e:
-                    st.error(f"Error loading levels: {e}")
-
-    # Level Display and Edit
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Support Levels")
-        for i, level in enumerate(st.session_state.support_levels):
-            cols = st.columns([3, 1, 1])
-            with cols[0]:
-                st.write(f"{'🟢 Major' if level['major'] else '⚪ Minor'} - {level['price']}")
-            with cols[1]:
-                if st.button("Delete", key=f"del_s_{i}"):
-                    st.session_state.support_levels.pop(i)
-                    st.experimental_rerun()
-
-    with col2:
         st.subheader("Resistance Levels")
-        for i, level in enumerate(st.session_state.resistance_levels):
-            cols = st.columns([3, 1, 1])
-            with cols[0]:
-                st.write(f"{'🔴 Major' if level['major'] else '⚪ Minor'} - {level['price']}")
-            with cols[1]:
-                if st.button("Delete", key=f"del_r_{i}"):
-                    st.session_state.resistance_levels.pop(i)
-                    st.experimental_rerun()
+        for i, level in enumerate(resistance_levels):
+            st.write(f"Resistance {i+1}: **{level:.2f}**")
 
+    with col2:
+        st.subheader("Support Levels")
+        for i, level in enumerate(support_levels):
+            st.write(f"Support {i+1}: **{level:.2f}**")
+
+    st.subheader("Dynamic Zones")
+    st.write(f"Dynamic Top: **{dynamic_top:.2f}**")
+    st.write(f"Dynamic Bottom: **{dynamic_bottom:.2f}**")
+
+    st.subheader("Magnet Price")
+    st.write(f"Magnet Price: **{magnet_price:.2f}**")
+
+# Tab: Trading Plan
 with tab3:
-    st.header("Trading Plan")
-    st.info("Trading Plan integration coming soon!")
+    st.header("📝 Trading Plan")
+    trading_plan = generate_trading_plan(resistance_levels, support_levels, magnet_price)
+    st.markdown(trading_plan)
 
+# Tab: Recap
+with tab4:
+    st.header("🔍 Daily Recap")
+    recap = generate_recap(data)
+    st.markdown(recap)
+
+# Tab: Interactive Chart
+with tab5:
+    st.header("📉 SPY Historical Chart")
+    def plot_candlestick(data):
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(
+            x=data['Date'],
+            open=data['Open'],
+            high=data['High'],
+            low=data['Low'],
+            close=data['Close'],
+            name='SPY'
+        ))
+
+        # Add Dynamic Zone
+        fig.add_hline(y=dynamic_top, line_dash="dash", line_color="red", annotation_text="Dynamic Top")
+        fig.add_hline(y=dynamic_bottom, line_dash="dash", line_color="blue", annotation_text="Dynamic Bottom")
+
+        # Add Magnet Price
+        fig.add_hline(y=magnet_price, line_dash="dot", line_color="green", annotation_text="Magnet Price")
+
+        fig.update_layout(
+            title="SPY Candlestick Chart",
+            xaxis_title="Date",
+            yaxis_title="Price",
+            template="plotly_dark",
+            height=700
+        )
+        return fig
+
+    st.plotly_chart(plot_candlestick(data), use_container_width=True)
