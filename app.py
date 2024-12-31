@@ -4,6 +4,14 @@ import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
+from sklearn.linear_model import LinearRegression
+import joblib
+import requests
+import openai
+from config import OPENAI_API_KEY
+
+# Set OpenAI API Key
+openai.api_key = OPENAI_API_KEY
 
 # Page Configurations
 st.set_page_config(page_title="Daily SPY Dashboard", page_icon="📈", layout="wide")
@@ -13,6 +21,25 @@ def fetch_historical_data(symbol, period="1mo", interval="1d"):
     data = yf.download(symbol, period=period, interval=interval)
     data.reset_index(inplace=True)
     return data
+
+# Fetch Market News using Finnhub API
+def fetch_market_news():
+    url = "https://finnhub.io/api/v1/news?category=general"
+    params = {"token": "ctpl0q9r01qqsrsb2aogctpl0q9r01qqsrsb2ap0"}
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        articles = response.json()
+        return articles[:5]  # Limit to 5 articles
+    return []
+
+# Fetch Economic Calendar using Finnhub API
+def fetch_economic_calendar():
+    url = "https://finnhub.io/api/v1/calendar/economic"
+    params = {"token": "ctpl0q9r01qqsrsb2aogctpl0q9r01qqsrsb2ap0"}
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        return response.json().get("economicCalendar", [])
+    return []
 
 # Calculate Levels
 def calculate_levels(data):
@@ -36,46 +63,130 @@ def calculate_levels(data):
 
     return resistance_levels, support_levels, magnet_price
 
-# Generate Trading Plan
+# Generate Trading Plan using OpenAI
 def generate_trading_plan(resistance, support, magnet):
-    plan = f"""
-    ### Bull Case
-    - If price breaks above **{resistance[0]:.2f}**, look for longs targeting **{resistance[1]:.2f}** and **{resistance[2]:.2f}**.
-    - Monitor **{magnet:.2f}** as a pivot point for continuation.
+    try:
+        prompt = f"""
+        Create a detailed trading plan for SPY based on the following levels:
+        Resistance Levels: {', '.join(f'{lvl:.2f}' for lvl in resistance)}
+        Support Levels: {', '.join(f'{lvl:.2f}' for lvl in support)}
+        Magnet Price: {magnet:.2f}
+        Include a bull case and bear case with actionable steps.
+        """
 
-    ### Bear Case
-    - If price falls below **{support[0]:.2f}**, look for shorts targeting **{support[1]:.2f}** and **{support[2]:.2f}**.
-    - Watch for failed breakdowns near **{support[1]:.2f}** to confirm continuation.
-    
-    ### Key Notes
-    - Volatility is elevated. Trade level to level.
-    - Avoid chasing moves; wait for reclaim setups.
-    - Size down in risky zones.
-    """
-    return plan
+        response = openai.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a financial trading assistant."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"Error generating trading plan: {str(e)}"
 
-# Generate Recap
+# Generate Recap using OpenAI
 def generate_recap(data):
-    today_high = data['High'].iloc[-1]
-    today_low = data['Low'].iloc[-1]
-    today_close = data['Close'].iloc[-1]
+    try:
+        today_high = data['High'].iloc[-1]
+        today_low = data['Low'].iloc[-1]
+        today_close = data['Close'].iloc[-1]
 
-    recap = f"""
-    ### Daily Recap
-    - **High:** {today_high:.2f}
-    - **Low:** {today_low:.2f}
-    - **Close:** {today_close:.2f}
+        prompt = f"""
+        Provide a concise daily market recap for SPY. Include the following details:
+        - Today's High: {today_high:.2f}
+        - Today's Low: {today_low:.2f}
+        - Today's Close: {today_close:.2f}
+        Summarize key market movements and significant levels.
+        """
 
-    Today's session saw a range between {today_low:.2f} and {today_high:.2f}, closing at {today_close:.2f}. Key movements included resistance tests and support reactions.
+        response = openai.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a financial analyst providing daily market summaries."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"Error generating recap: {str(e)}"
+    # Display TradingView Chart
+def display_tradingview_chart():
+    chart_html = """
+        <!-- TradingView Widget BEGIN -->
+        <div class="tradingview-widget-container">
+            <div class="tradingview-widget-container__widget"></div>
+            <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+            {
+              "width": "100%",
+              "height": "800",
+              "symbol": "SPY",
+              "interval": "D",
+              "timezone": "America/New_York",
+              "theme": "dark",
+              "style": "1",
+              "locale": "en",
+              "enable_publishing": false,
+              "backgroundColor": "rgba(19, 23, 34, 1)",
+              "gridColor": "rgba(42, 46, 57, 0.06274509803921569)",
+              "allow_symbol_change": true,
+              "calendar": true,
+              "hide_side_toolbar": false,
+              "studies": [
+                "MAExp@tv-basicstudies",
+                "VWAP@tv-basicstudies",
+                "Volume@tv-basicstudies"
+              ]
+            }
+            </script>
+        </div>
+        <!-- TradingView Widget END -->
     """
-    return recap
+    return chart_html
+
+# Train Predictive Model
+def train_model(data):
+    try:
+        data['Target'] = data['Close'].shift(-1)
+        data.dropna(inplace=True)
+        X = data[['Open', 'High', 'Low', 'Close']]
+        y = data['Target']
+        model = LinearRegression()
+        model.fit(X, y)
+        joblib.dump(model, 'spy_predictive_model.pkl')
+    except Exception as e:
+        st.error(f"Error training model: {str(e)}")
+
+# Predict Next Day Levels
+def predict_levels(data):
+    try:
+        model = joblib.load('spy_predictive_model.pkl')
+        last_row = data.iloc[-1][['Open', 'High', 'Low', 'Close']].values.reshape(1, -1)
+        predicted_close = model.predict(last_row)[0]
+        return predicted_close
+    except Exception as e:
+        st.error(f"Error predicting levels: {str(e)}")
+        return None
 
 # Load Historical Data
 symbol = "SPY"
 data = fetch_historical_data(symbol)
 
+# Train Model (Run once and comment out in production)
+try:
+    train_model(data)
+except Exception as e:
+    st.error(f"Error in model training: {str(e)}")
+
 # Calculate Levels
 resistance_levels, support_levels, magnet_price = calculate_levels(data)
+predicted_close = predict_levels(data)
+
+# Fetch News
+news_articles = fetch_market_news()
+
+# Fetch Economic Calendar
+economic_events = fetch_economic_calendar()
 
 # Sidebar: User Input for Adjustments
 st.sidebar.header("Level Adjustments")
@@ -94,7 +205,7 @@ resistance_levels = [
 
 # Main Content with Tabs
 st.title("Daily SPY Dashboard")
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["Market Overview", "Key Levels", "Trading Plan", "Recap", "Chart"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Market Overview", "Key Levels", "Trading Plan", "Recap", "Chart", "News", "Fed Calendar"])
 
 # Tab: Market Overview
 with tab1:
@@ -144,32 +255,26 @@ with tab4:
 
 # Tab: Interactive Chart
 with tab5:
-    st.header("📉 SPY Historical Chart")
-    def plot_candlestick(data):
-        fig = go.Figure()
-        fig.add_trace(go.Candlestick(
-            x=data['Date'],
-            open=data['Open'],
-            high=data['High'],
-            low=data['Low'],
-            close=data['Close'],
-            name='SPY'
-        ))
+    st.header("📉 SPY Chart")
+    st.components.v1.html(display_tradingview_chart(), height=800)
 
-        # Add Dynamic Zone
-        fig.add_hline(y=dynamic_top, line_dash="dash", line_color="red", annotation_text="Dynamic Top")
-        fig.add_hline(y=dynamic_bottom, line_dash="dash", line_color="blue", annotation_text="Dynamic Bottom")
+# Tab: News
+with tab6:
+    st.header("🗞️ Market News")
+    for article in news_articles:
+        st.subheader(article['headline'])
+        st.write(article['summary'])
+        st.markdown(f"[Read more]({article['url']})")
 
-        # Add Magnet Price
-        fig.add_hline(y=magnet_price, line_dash="dot", line_color="green", annotation_text="Magnet Price")
-
-        fig.update_layout(
-            title="SPY Candlestick Chart",
-            xaxis_title="Date",
-            yaxis_title="Price",
-            template="plotly_dark",
-            height=700
-        )
-        return fig
-
-    st.plotly_chart(plot_candlestick(data), use_container_width=True)
+# Tab: Fed Calendar
+with tab7:
+    st.header("📅 Fed Calendar")
+    if economic_events:
+        for event in economic_events[:5]:  # Display the next 5 events
+            st.subheader(event.get("event", ""))
+            st.write(f"Date: {event.get('date', 'N/A')}")
+            st.write(f"Country: {event.get('country', 'N/A')}")
+            st.write(f"Impact: {event.get('impact', 'N/A')}")
+            st.write(f"Actual: {event.get('actual', 'N/A')} | Forecast: {event.get('forecast', 'N/A')} | Previous: {event.get('previous', 'N/A')}")
+    else:
+        st.write("No upcoming events found.")
